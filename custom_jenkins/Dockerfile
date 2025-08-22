@@ -1,4 +1,4 @@
-# Use the Jenkins image as the base image
+# Use the Jenkins LTS image
 FROM jenkins/jenkins:lts
 
 # Switch to root user to install dependencies
@@ -13,13 +13,19 @@ RUN apt-get update -y && \
     apt-get install -y docker-ce docker-ce-cli containerd.io && \
     apt-get clean
 
-# Add Jenkins user to the Docker group (create if it doesn't exist)
+# Add Jenkins user to the Docker group
 RUN groupadd -f docker && \
     usermod -aG docker jenkins
 
-# Create the Docker directory and volume for DinD
+# Create the Docker volume for DinD
 RUN mkdir -p /var/lib/docker
 VOLUME /var/lib/docker
 
-# Switch back to the Jenkins user
+# Install required Jenkins plugins
+RUN jenkins-plugin-cli --plugins \
+    cloudbees-folder:latest \
+    git:latest \
+    workflow-aggregator:latest
+
+# Switch back to Jenkins user
 USER jenkins
