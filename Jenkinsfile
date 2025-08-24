@@ -1,58 +1,85 @@
-pipeline{
+pipeline {
     agent any
 
     environment {
         SONAR_PROJECT_KEY = 'LLMOPS'
-		SONAR_SCANNER_HOME = tool 'Sonarqube'
+        SONAR_SCANNER_HOME = tool 'Sonarqube'
         AWS_REGION = 'us-east-1'
         ECR_REPO = 'my-repo'
         IMAGE_TAG = 'latest'
-	}
+    }
 
-    stages{
-        stage('Cloning Github repo to Jenkins'){
-            steps{
-                script{
+    stages {
+        stage('Cloning Github repo to Jenkins') {
+            steps {
+                script {
                     echo 'Cloning Github repo to Jenkins............'
-                    checkout scmGit(branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[credentialsId: 'github-token', url: 'https://github.com/PrinceGupta8/Multi-AI-Agent-using-Jenkins-SonarQube-FastAPI-Langchain-Langgraph-AWS-ECS.git']])
+                    checkout scmGit(
+                        branches: [[name: '*/main']],
+                        extensions: [],
+                        userRemoteConfigs: [[
+                            credentialsId: 'github-token',
+                            url: 'https://github.com/PrinceGupta8/Multi-AI-Agent-using-Jenkins-SonarQube-FastAPI-Langchain-Langgraph-AWS-ECS.git'
+                        ]]
+                    )
                 }
             }
         }
 
-    stage('SonarQube Analysis'){
-			steps {
-				withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-    					
-					withSonarQubeEnv('sonarqube') {
-    						sh """
-						${SONAR_SCANNER_HOME}/bin/sonar-scanner \
-						-Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-						-Dsonar.sources=. \
-						-Dsonar.host.url=http://sonarqube-dind:9000 \
-						-Dsonar.login=${SONAR_TOKEN}
-						"""
-					}
-				}
-			}
-		}
-
-    stage('Build and Push Docker Image to ECR') {
+        stage('SonarQube Analysis') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-token']]) {
-                    script {
-                        def accountId = sh(script: "aws sts get-caller-identity --query Account --output text", returnStdout: true).trim()
-                        def ecrUrl = "${accountId}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO}"
-
+                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                    withSonarQubeEnv('sonarqube') {
                         sh """
-                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ecrUrl}
-                        docker build -t ${env.ECR_REPO}:${IMAGE_TAG} .
-                        docker tag ${env.ECR_REPO}:${IMAGE_TAG} ${ecrUrl}:${IMAGE_TAG}
+                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=http://sonarqube-dind:9000 \
+                        -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Build and Push Docker Image to ECR') {
+            steps {
+                withAWS(credentials: 'aws-token', region: "${AWS_REGION}") {
+                    script {
+                        def accountId = sh(
+                            script: "aws sts get-caller-identity --query Account --output text",
+                            returnStdout: true
+                        ).trim()
+
+                        def ecrUrl = "${accountId}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+
+                        // Ensure repo exists
+                        sh """
+                        aws ecr describe-repositories --repository-names ${ECR_REPO} || \
+                        aws ecr create-repository --repository-name ${ECR_REPO}
+                        """
+
+                        // Login with retry
+                        retry(3) {
+                            sh """
+                            aws ecr get-login-password --region ${AWS_REGION} \
+                            | docker login --username AWS --password-stdin ${ecrUrl}
+                            """
+                        }
+
+                        // Build, Tag & Push
+                        sh """
+                        docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+                        docker tag ${ECR_REPO}:${IMAGE_TAG} ${ecrUrl}:${IMAGE_TAG}
                         docker push ${ecrUrl}:${IMAGE_TAG}
                         """
                     }
                 }
             }
         }
+    }
+}
+
 
     //     stage('Deploy to ECS Fargate') {
     // steps {
