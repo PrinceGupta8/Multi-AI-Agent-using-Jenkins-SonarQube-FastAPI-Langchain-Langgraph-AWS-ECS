@@ -1,45 +1,73 @@
-pipeline{
+pipeline {
     agent any
 
     environment {
         SONAR_PROJECT_KEY = 'LLMOPS'
-		SONAR_SCANNER_HOME = tool 'Sonarqube'
+        SONAR_SCANNER_HOME = tool 'Sonarqube'
         AWS_REGION = 'us-east-1'
         ECR_REPO = 'my-repo'
         IMAGE_TAG = 'latest'
-	}
+    }
 
-    stages{
-        stage('Cloning Github repo to Jenkins'){
-            steps{
-                script{
+    stages {
+        stage('Cloning Github repo to Jenkins') {
+            steps {
+                script {
                     echo 'Cloning Github repo to Jenkins............'
-                    checkout scmGit(branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[credentialsId: 'github-token', url: 'https://github.com/PrinceGupta8/Multi-AI-Agent-using-Jenkins-SonarQube-FastAPI-Langchain-Langgraph-AWS-ECS.git']])
+                    checkout scmGit(
+                        branches: [[name: '*/main']],
+                        extensions: [],
+                        userRemoteConfigs: [[
+                            credentialsId: 'github-token', 
+                            url: 'https://github.com/PrinceGupta8/Multi-AI-Agent-using-Jenkins-SonarQube-FastAPI-Langchain-Langgraph-AWS-ECS.git'
+                        ]]
+                    )
                 }
             }
         }
 
-    stage('SonarQube Analysis'){
-			steps {
-				withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-    					
-					withSonarQubeEnv('sonarqube') {
-    						sh """
-						${SONAR_SCANNER_HOME}/bin/sonar-scanner \
-						-Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-						-Dsonar.sources=. \
-						-Dsonar.host.url=http://sonarqube-dind:9000 \
-						-Dsonar.login=${SONAR_TOKEN}
-						"""
-					}
-				}
-			}
-		}
+        stage('Wait for SonarQube') {
+            steps {
+                script {
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitUntil {
+                            try {
+                                sh "curl -sSf http://sonarqube-dind:9000 > /dev/null"
+                                return true
+                            } catch (err) {
+                                echo "SonarQube not ready yet. Retrying..."
+                                sleep 5
+                                return false
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-    stage('Build and Push Docker Image to ECR') {
+        stage('SonarQube Analysis') {
+            steps {
+                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                    withSonarQubeEnv('sonarqube') {
+                        sh """
+                        ${SONAR_SCANNER_HOME}/bin/sonar-scanner \
+                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=http://sonarqube-dind:9000 \
+                        -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Build and Push Docker Image to ECR') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-token']]) {
                     script {
+                        // Check Docker access
+                        sh "docker info || echo 'Docker access may be restricted!'"
+
                         def accountId = sh(script: "aws sts get-caller-identity --query Account --output text", returnStdout: true).trim()
                         def ecrUrl = "${accountId}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO}"
 
@@ -54,21 +82,21 @@ pipeline{
             }
         }
 
-    //     stage('Deploy to ECS Fargate') {
-    // steps {
-    //     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-token']]) {
-    //         script {
-    //             sh """
-    //             aws ecs update-service \
-    //               --cluster multi-ai-agent-cluster \
-    //               --service multi-ai-agent-def-service-shqlo39p  \
-    //               --force-new-deployment \
-    //               --region ${AWS_REGION}
-    //             """
-    //             }
-    //         }
-    //     }
-    //  }
-        
+        // Optional ECS deploy stage (commented out)
+        // stage('Deploy to ECS Fargate') {
+        //     steps {
+        //         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-token']]) {
+        //             script {
+        //                 sh """
+        //                 aws ecs update-service \
+        //                   --cluster multi-ai-agent-cluster \
+        //                   --service multi-ai-agent-def-service-shqlo39p  \
+        //                   --force-new-deployment \
+        //                   --region ${AWS_REGION}
+        //                 """
+        //             }
+        //         }
+        //     }
+        // }
     }
 }
